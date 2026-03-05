@@ -1,0 +1,3 @@
+[submodule "dreamplace"]
+	path = dreamplace
+	url = https://github.com/limbo018/DREAMPlace.git
