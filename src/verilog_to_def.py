@@ -45,6 +45,49 @@ OUTPUT_PIN_NAMES = {'Y', 'Z', 'ZN', 'CON', 'SN', 'QN', 'Q', 'CO', 'S'}
 DEFAULT_AREA_UM2 = 0.10    # 找不到 cell 時的面積 fallback
 
 
+def parse_node_id(name: str):
+    m = re.match(r'^[gn](\d+)$', name)
+    return int(m.group(1)) if m else None
+
+
+def clamp(value: int, low: int, high: int) -> int:
+    if high < low:
+        return low
+    return max(low, min(value, high))
+
+
+def um_to_dbu(value_um: float) -> int:
+    return int(round(value_um * DBU_PER_UM))
+
+
+def load_seed_positions(path: str) -> dict:
+    """Read node_idx,x_um,y_um CSV and return {node_id: (x_um, y_um)}."""
+    seeds = {}
+    with open(path) as f:
+        header_skipped = False
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if not header_skipped:
+                header_skipped = True
+                if line.lower().startswith('node_idx,'):
+                    continue
+            if line.startswith('#'):
+                continue
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) < 3:
+                continue
+            try:
+                node_id = int(parts[0])
+                x_um = float(parts[1])
+                y_um = float(parts[2])
+            except ValueError:
+                continue
+            seeds[node_id] = (x_um, y_um)
+    return seeds
+
+
 # =========================================================
 # 1. 解析 asap7_libcell_info.txt
 # =========================================================
@@ -257,7 +300,8 @@ def write_lef(lef_path: str, cell_types_used: set, cell_db: dict):
 # =========================================================
 def write_def(def_path: str, module_name: str,
               inputs: list, outputs: list, instances: list,
-              cell_db: dict, utilization: float = 0.70) -> dict:
+              cell_db: dict, utilization: float = 0.70,
+              seed_positions=None) -> dict:
     """
     生成 DEF 檔（DIEAREA、ROW、COMPONENTS、PINS、NETS）。
     回傳 chip 尺寸資訊 dict。
@@ -287,6 +331,10 @@ def write_def(def_path: str, module_name: str,
 
     all_io_ports = set(inputs) | set(outputs)
 
+    seed_positions = seed_positions or {}
+    seeded_components = 0
+    seeded_pins = 0
+
     with open(def_path, 'w') as f:
         f.write("VERSION 5.8 ;\n")
         f.write('DIVIDERCHAR "/" ;\n')
@@ -306,23 +354,39 @@ def write_def(def_path: str, module_name: str,
         # COMPONENTS
         f.write(f"COMPONENTS {len(instances)} ;\n")
         for cell_type, inst_name, _ in instances:
-            f.write(f"   - {inst_name} {cell_type} + UNPLACED ;\n")
+            node_id = parse_node_id(inst_name)
+            width_dbu = cell_width_dbu(cell_type, cell_db)
+            if node_id is not None and node_id in seed_positions:
+                x_um, y_um = seed_positions[node_id]
+                x_dbu = clamp(um_to_dbu(x_um), 0, chip_W_dbu - width_dbu)
+                y_dbu = clamp(um_to_dbu(y_um), 0, chip_H_dbu - CELL_HEIGHT_DBU)
+                f.write(f"   - {inst_name} {cell_type} + PLACED ( {x_dbu} {y_dbu} ) N ;\n")
+                seeded_components += 1
+            else:
+                f.write(f"   - {inst_name} {cell_type} + UNPLACED ;\n")
         f.write("END COMPONENTS\n\n")
 
         # PINS（primary I/O）
         all_io = [(p, 'INPUT') for p in inputs] + [(p, 'OUTPUT') for p in outputs]
         f.write(f"PINS {len(all_io)} ;\n")
-        chip_border_step = max(CELL_HEIGHT_DBU, chip_H_dbu // max(1, len(all_io) + 1))
+        input_ports = list(inputs)
+        output_ports = list(outputs)
+        input_step = max(CELL_HEIGHT_DBU, chip_H_dbu // max(1, len(input_ports) + 1))
+        output_step = max(CELL_HEIGHT_DBU, chip_H_dbu // max(1, len(output_ports) + 1))
         for idx, (port_name, direction) in enumerate(all_io):
-            # 輸入放左邊界，輸出放右邊界
+            # Primary I/Os should stay on the die boundary instead of being warm-started
+            # from internal graph coordinates.
             if direction == 'INPUT':
                 x_dbu = 0
+                port_idx = input_ports.index(port_name)
+                y_dbu = min(input_step * (port_idx + 1), chip_H_dbu - CELL_HEIGHT_DBU)
             else:
                 x_dbu = chip_W_dbu - SITE_WIDTH_DBU
-            y_dbu = min(chip_border_step * (idx + 1), chip_H_dbu - CELL_HEIGHT_DBU)
+                port_idx = output_ports.index(port_name)
+                y_dbu = min(output_step * (port_idx + 1), chip_H_dbu - CELL_HEIGHT_DBU)
             f.write(f"   - {port_name} + NET {port_name} + DIRECTION {direction} + USE SIGNAL\n")
             f.write(f"     + LAYER M1 ( 0 0 ) ( {SITE_WIDTH_DBU} {CELL_HEIGHT_DBU} )\n")
-            f.write(f"     + PLACED ( {x_dbu} {y_dbu} ) N ;\n")
+            f.write(f"     + FIXED ( {x_dbu} {y_dbu} ) N ;\n")
         f.write("END PINS\n\n")
 
         # NETS
@@ -351,6 +415,8 @@ def write_def(def_path: str, module_name: str,
         'num_rows': num_rows,
         'num_cols': num_cols,
         'num_nets': len(net_conns),
+        'seeded_components': seeded_components,
+        'seeded_pins': seeded_pins,
     }
 
 
@@ -359,7 +425,8 @@ def write_def(def_path: str, module_name: str,
 # =========================================================
 def write_dreamplace_config(config_path: str, lef_files: list,
                             def_file: str, result_dir: str,
-                            num_cells: int):
+                            num_cells: int, use_seeded_init: bool = False,
+                            target_density: float = 0.60):
     """
     生成 DREAMPlace params JSON（LEF/DEF 模式）。
     num_bins 根據 cell 數量自動選擇。
@@ -386,7 +453,7 @@ def write_dreamplace_config(config_path: str, lef_files: list,
                 "optimizer": "nesterov"
             }
         ],
-        "target_density": 0.70,
+        "target_density": target_density,
         "density_weight": 8e-5,
         "gamma": 4.0,
         "random_seed": 1000,
@@ -394,12 +461,12 @@ def write_dreamplace_config(config_path: str, lef_files: list,
         "enable_fillers": 1,
         "gp_noise_ratio": 0.025,
         "global_place_flag": 1,
-        "legalize_flag": 0,        # 先不做 legalization
-        "detailed_place_flag": 0,  # 先不做 detailed placement
+        "legalize_flag": 1,        # 參考 DREAMPlace benchmark 預設，允許 internal legalization
+        "detailed_place_flag": 0,  # 目前不依賴外部 detailed placer
         "stop_overflow": 0.10,
         "dtype": "float32",
         "plot_flag": 0,
-        "random_center_init_flag": 1,
+        "random_center_init_flag": 0 if use_seeded_init else 1,
         "sort_nets_by_degree": 0,
         "num_threads": 8,
         "result_dir": result_dir,
@@ -432,11 +499,15 @@ def main():
         help='tech LEF 檔（含 UNITS + layer 定義，如 asap7_tech_1x_201209.lef）')
     parser.add_argument('--utilization', type=float, default=0.70,
         help='目標使用率 (default: 0.70)')
+    parser.add_argument('--target-density', type=float, default=0.60,
+        help='DREAMPlace target density (default: 0.60)')
     parser.add_argument('--design-name', default=None,
         help='覆蓋設計名稱')
     parser.add_argument('--docker-prefix', default=None,
         help='把 JSON 內的 host 絕對路徑前綴換成 Docker 路徑，例如: '
              '--docker-prefix /home/james/projects:/workspace')
+    parser.add_argument('--seed-positions', default=None,
+        help='可選的 node_idx,x_um,y_um CSV，用來把 matching instances 寫成 PLACED')
     args = parser.parse_args()
 
     # 建立路徑轉換函式
@@ -480,6 +551,12 @@ def main():
         if len(missing) <= 5:
             print(f"        {missing}")
 
+    seed_positions = {}
+    if args.seed_positions:
+        print(f"[2.5/5] Loading seed positions: {args.seed_positions}")
+        seed_positions = load_seed_positions(args.seed_positions)
+        print(f"      Loaded {len(seed_positions)} seed nodes")
+
     # --- Step 3: 產生 LEF ---
     if args.lef:
         import shutil
@@ -515,23 +592,30 @@ def main():
     def_path = os.path.join(args.output_dir, f"{module_name}.def")
     print(f"[4/5] Generating DEF: {def_path}")
     chip_info = write_def(def_path, module_name, inputs, outputs,
-                          instances, cell_db, args.utilization)
+                          instances, cell_db, args.utilization, seed_positions)
     print(f"      Die area: {chip_info['chip_W_um']:.1f} × {chip_info['chip_H_um']:.1f} μm")
     print(f"               ({chip_info['chip_W_dbu']} × {chip_info['chip_H_dbu']} DBU)")
     print(f"      Total cell area: {chip_info['total_area_um2']:.2f} μm²")
     print(f"      Rows: {chip_info['num_rows']}, Cols: {chip_info['num_cols']}")
     print(f"      Nets: {chip_info['num_nets']}")
+    print(f"      Seeded components: {chip_info['seeded_components']}")
+    print(f"      Seeded pins:       {chip_info['seeded_pins']}")
+    print(f"      Utilization:      {args.utilization:.2f}")
+    print(f"      Target density:   {args.target_density:.2f}")
 
     # --- Step 5: 產生 DREAMPlace JSON config ---
     config_path = os.path.join(args.output_dir, f"{module_name}.json")
     result_dir  = os.path.join(args.output_dir, "results")
     print(f"[5/5] Generating DREAMPlace config: {config_path}")
+    use_seeded_init = chip_info['seeded_components'] > 0
     write_dreamplace_config(
         config_path,
         [to_json_path(f) for f in lef_files],
         to_json_path(def_path),
         to_json_path(result_dir),
-        len(instances)
+        len(instances),
+        use_seeded_init,
+        args.target_density
     )
 
     # --- 儲存 summary（供 read_placement.py 使用）---
