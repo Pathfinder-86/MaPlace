@@ -6,6 +6,79 @@ An integrated tool combining **GradMap** (gradient-based technology mapping) wit
 
 ---
 
+## Latest Experiment Snapshot (2026-03-06)
+
+Current reference run:
+- placement run id: `run_20260306T043153Z`
+- GradMap metrics source: [../gradmap/validation/torch_metrics.csv](../gradmap/validation/torch_metrics.csv)
+- placement metrics source: [../gradmap/validation/placement_metrics.csv](../gradmap/validation/placement_metrics.csv)
+
+### GradMap / Torch metrics
+
+| step | loss | area | delay | best_cost |
+|---|---:|---:|---:|---:|
+| 1 | 2.4715 | 159.636 | 707.027 | 1.6932 |
+| 40 | 1.0331 | 174.975 | 552.425 | 1.2025 |
+| 60 | 1.0132 | 172.846 | 536.952 | 1.1691 |
+| 100 | 1.0175 | 171.694 | 532.756 | 1.1531 |
+
+![GradMap torch metrics](../gradmap/gradmap_docs/assets/maplace_torch_metrics.png)
+
+Interpretation:
+- loss decreases substantially
+- delay improves from about `707` to `533`
+- area rises from about `159.6` to `171.7`
+- current optimization is trading some area for better delay
+
+### Placement metrics
+
+| step | final HPWL | final overflow | final max density | converged |
+|---|---:|---:|---:|---|
+| 20 | 204713.4 | 0.0995 | 1.363 | yes |
+| 40 | 199214.8 | 0.0988 | 1.420 | yes |
+| 60 | 216320.3 | 0.3169 | 4.237 | no |
+| 80 | 208541.5 | 0.3641 | 3.705 | no |
+| 100 | 205527.5 | 0.3899 | 3.869 | no |
+
+![Placement metrics](../gradmap/gradmap_docs/assets/maplace_placement_metrics.png)
+
+Interpretation:
+- step `20` and `40` converge well
+- after step `40`, overflow grows sharply
+- the integration is functioning, but later-stage congestion is still unresolved
+
+### Combined summary figure
+
+![Latest experiment snapshot](../gradmap/gradmap_docs/assets/maplace_latest_snapshot.png)
+
+### Layout snapshots
+
+- [iter_20 layout](testcase/gradmap_output/placement_layout_iter_20.png)
+- [iter_40 layout](testcase/gradmap_output/placement_layout_iter_40.png)
+- [iter_60 layout](testcase/gradmap_output/placement_layout_iter_60.png)
+- [iter_80 layout](testcase/gradmap_output/placement_layout_iter_80.png)
+- [iter_100 layout](testcase/gradmap_output/placement_layout_iter_100.png)
+
+### One-paragraph takeaway
+
+MaPlace already closes the loop between mapping and placement: GradMap improves delay using placement-aware feedback, and DREAMPlace can be invoked repeatedly with warm-started coordinates. The current limitation is not runtime stability but physical quality at later iterations, where placement overflow rises after step `40` even though GradMap delay continues improving.
+
+---
+
+## PPT-Ready Outline
+
+If you want to generate slides from markdown, use:
+- [../gradmap/gradmap_docs/maplace_ppt_outline.md](../gradmap/gradmap_docs/maplace_ppt_outline.md)
+
+Suggested section order:
+1. MaPlace Introduction
+2. Preliminary
+3. Method
+4. Experiments
+5. Issue
+
+---
+
 ## Docker Quick Start
 
 ### One-time Host Setup
@@ -47,6 +120,11 @@ sudo docker run -it --gpus all \
   -v /home/james/projects/gradmap:/workspace/gradmap \
   dreamplace-maplace:ready bash
 ```
+
+Important:
+- current bridge script expects ASAP7 LEF/techlef under [gradmap/libs/ASAP7](../gradmap/libs/ASAP7)
+- after Docker restart, mounting only [maplace](.) and [gradmap](../gradmap) is sufficient
+- if a script still points to `/home/james/projects/libs/...` inside the container, update it to `/workspace/gradmap/libs/...`
 
 Inside the container, set PYTHONPATH and run DREAMPlace:
 
