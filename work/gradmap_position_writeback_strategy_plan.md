@@ -74,10 +74,10 @@ We should treat placement write-back like weight initialization:
 ### Proposed config style
 ```ini
 # --- Placement Write-Back Strategy ---
+# 現已啟用 ABC cover 數據。以下兩種皆基於 match ownership semantics：
 # 可選值：
-#   - "active_only"       : 只回寫目前實際被放置到的節點
-#   - "owner_propagation" : active node 直接回寫；covered/uncovered node 只繼承明確 owner 的位置 (推薦)
-#   - "neighbor_average"  : 舊行為，使用 fanout/fanin 平均補位置
+#   - "owner_propagation" : 先來先寫，第一個 owner match 的座標被寫入 cover node
+#   - "owner_average"     : 多個 owner 時取平均座標（更均衡分散）
 optimizer.placement_writeback_strategy owner_propagation
 ```
 
@@ -89,99 +89,55 @@ This mirrors the style of:
 
 ## 5. Proposed strategy set
 
-## 5.1 `neighbor_average`
+## 5.1 `owner_propagation`（推薦 - 快速）
 ### Meaning
-Preserve the current behavior.
-
-### Rules
-- Read placed node coordinates from CSV.
-- Missing nodes are filled by:
-  1. backward fanout average,
-  2. forward fanin average.
-
-### Pros
-- backward compatible,
-- easy fallback / baseline.
-
-### Cons
-- semantically weak,
-- likely source of seed contamination,
-- hard to reason about.
-
-### Use case
-Only for regression comparison with old results.
-
----
-
-## 5.2 `active_only`
-### Meaning
-Only nodes directly present in the placed DEF get updated positions.
-All other graph nodes keep their existing coordinates.
-
-### Rules
-- If node id appears in placement CSV: overwrite with new `(x, y)`.
-- Otherwise: keep previous graph position unchanged.
-- No averaging.
-- No guessed propagation.
-
-### Pros
-- simplest semantics,
-- very controlled,
-- easy to debug.
-
-### Cons
-- uncovered nodes may retain stale positions for many iterations,
-- less smooth if graph structure changes a lot.
-
-### Use case
-Best first debugging baseline.
-If this already stabilizes placement, then propagation was indeed the problem.
-
----
-
-## 5.3 `owner_propagation` (recommended long-term direction)
-### Meaning
-Only propagate positions when there is a meaningful owner relationship.
-Do **not** use generic neighborhood averaging.
+Propagate positions from the hard-selected match owner to covered AIG nodes.
+When a node is covered by multiple owners, use the first one (first-write semantics).
 
 ### Rules
 1. Directly placed active nodes get exact placed coordinates.
-2. A covered / uncovered node receives a propagated coordinate **only if** we can identify a clear active owner.
-3. If no clear owner exists, keep the old coordinate instead of inventing a new one.
-
-### What counts as an owner
-This needs to be derived from mapping semantics, not graph smoothing.
-Possible owner definitions:
-- the hard-selected match root that materialized as gate `g<node_id>`,
-- an explicit covered-node relationship already known in the mapping data structure,
-- a unique selected representative for a merged logic region.
-
-### Important limitation
-`owner_propagation` **alone does not guarantee** that every AIG node receives a fresh new `(x, y)` in every placement iteration.
-
-Why not:
-- some nodes are not directly materialized in the current hard-mapped netlist,
-- some nodes may not have a unique owner,
-- some nodes may not yet have enough mapping metadata to infer ownership safely.
-
-So the correct design is not:
-- "owner propagation guarantees full coverage"
-
-but instead:
-- "owner propagation updates positions only when the semantic source is trustworthy"
-- and a separate fallback layer guarantees that timing / wire-cap evaluation never loses coverage.
+2. A covered node receives the coordinate from its primary owner (AW > 0.5 match).
+3. If a node has multiple owners, take the first one; log conflicts for diagnostics.
+4. Polarity pair fallback applies to owner-propagated nodes too.
 
 ### Pros
-- semantically grounded,
-- avoids artificial collapse,
-- keeps continuity where ownership is real.
+- semantically grounded in match ownership,
+- fast (O(n)),
+- no artificial averaging.
 
 ### Cons
-- requires inspection of mapping data structures,
-- slightly more implementation work.
+- multiple owners result in arbitration (first-come-first-served),
+- some owner conflicts may indicate redundancy or ambiguity.
 
 ### Use case
-This should become the long-term default.
+Default recommendation for most designs. Suitable when coverage is clear and non-redundant.
+
+---
+
+## 5.2 `owner_average`（推薦 - 均衡）
+### Meaning
+Propagate positions from multiple owners by averaging their coordinates.
+
+### Rules
+1. Directly placed active nodes get exact placed coordinates.
+2. A covered node receives the averaged position of all its owners (AW > 0.5 matches).
+3. Only owners that already have new positions contribute to the average.
+4. Polarity pair fallback applies as before.
+
+### Pros
+- semantically grounded in match ownership,
+- avoids arbitration; more balanced when multiple matches cover the same node,
+- still O(n × k) where k = average number of owners per node.
+
+### Cons
+- slightly more expensive to compute,
+- averaging may smooth out distinct ownership regions.
+
+### Use case
+Recommended for designs with high redundancy (multiple matches covering the same node).
+Experimental comparison against `owner_propagation`.
+
+---
 
 ---
 
@@ -219,13 +175,14 @@ How we produce **new** positions from the current placement result.
 
 Example config:
 ```ini
-optimizer.placement_writeback_strategy active_only
+optimizer.placement_writeback_strategy owner_propagation
 ```
 
 Possible values:
-- `active_only`
-- `owner_propagation`
-- `neighbor_average`
+- `owner_propagation` : 先來先寫（default，快速）
+- `owner_average`     : 多個 owner 時平均（均衡分散）
+
+---
 
 ### B. missing-position fallback strategy
 How we ensure **every node still has a usable position** for wire-cap / STA.
@@ -242,11 +199,15 @@ Possible values:
 
 This split is necessary because wire-cap and STA need robust total coverage, while write-back semantics should remain conservative.
 
-## Phase 0: no behavioral change except configuration scaffolding
-Add config parsing and strategy enum/string handling.
+## Phase 0: Configuration with ABC cover support
+Current implementation status:
 
-### Files likely to change
-- `gradmap/src/optimizer/optimizer.h`
+### Completed
+- ABC `cover.txt` parser in `CircuitParser::parse(match_file, cover_file)`
+- Store `cover_node_idxs` in each `MatchCandidate`
+- `owner_propagation` write-back strategy (first-write semantics)
+- `owner_average` write-back strategy (averaging semantics)
+- Config parsing for both strategies
 - `gradmap/src/flow/flow_manager.cpp`
 - `gradmap/src/mapping/circuit_graph_torch.cpp`
 - possibly `gradmap/src/mapping/circuit_graph_torch.h`

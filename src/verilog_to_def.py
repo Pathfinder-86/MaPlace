@@ -429,15 +429,13 @@ def write_dreamplace_config(config_path: str, lef_files: list,
                             target_density: float = 0.60):
     """
     生成 DREAMPlace params JSON（LEF/DEF 模式）。
-    num_bins 根據 cell 數量自動選擇。
+    簡化設定，專注全局放置效果：
+    - num_bins 固定 256×256（平衡精度與速度）
+    - target_density 固定 1.0（同 ISPD2005 baseline，避免過度約束）
+    - 僅啟用全局放置（global_place），不用 legalize 或 detailed（控制變數）
     """
-    # 根據 cell 數量決定 bin 大小
-    if num_cells < 5000:
-        bins = 64
-    elif num_cells < 50000:
-        bins = 128
-    else:
-        bins = 256
+    # 固定 256×256（中等精細度）
+    bins = 256
 
     config = {
         "lef_input": lef_files,
@@ -453,17 +451,18 @@ def write_dreamplace_config(config_path: str, lef_files: list,
                 "optimizer": "nesterov"
             }
         ],
-        "target_density": target_density,
+        "target_density": 1.0,  # ✅ 直接設 1.0（同 ISPD2005，簡化實驗）
         "density_weight": 8e-5,
         "gamma": 4.0,
         "random_seed": 1000,
+        "scale_factor": 1.0,  # ✅ 無坐標縮放（DBU 統一）
         "ignore_net_degree": 100,
         "enable_fillers": 1,
         "gp_noise_ratio": 0.025,
         "global_place_flag": 1,
-        "legalize_flag": 1,        # 參考 DREAMPlace benchmark 預設，允許 internal legalization
-        "detailed_place_flag": 0,  # 目前不依賴外部 detailed placer
-        "stop_overflow": 0.10,
+        "legalize_flag": 0,  # ✅ 禁用（專注全局放置效果）
+        "detailed_place_flag": 0,  # ✅ 禁用（只要全局放置，保持快速）
+        "stop_overflow": 0.07,
         "dtype": "float32",
         "plot_flag": 0,
         "random_center_init_flag": 0 if use_seeded_init else 1,

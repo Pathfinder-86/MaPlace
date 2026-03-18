@@ -1,0 +1,134 @@
+# MaPlace QoR Metrics Plot Configuration
+# ==========================================
+# This configuration drives metrics_analyzer.py to generate standardized dashboard plots
+
+# Metrics definition
+metrics:
+  torch:
+    - name: delay
+      unit: "ps"
+      color: "red"
+      description: "Total gate delay (from GradMap STA)"
+
+    - name: area
+      unit: "μm²"
+      color: "blue"
+      description: "Total cell area (expected value)"
+
+  placement:
+    - name: final_overflow
+      unit: "%"
+      color: "orange"
+      description: "Placement overflow ratio (DREAMPlace)"
+
+    - name: final_HPWL
+      unit: "μm"
+      color: "green"
+      description: "Half-perimeter wirelength"
+
+    - name: max_density
+      unit: "ratio"
+      color: "purple"
+      description: "Maximum bin density"
+
+    - name: converged
+      type: "binary"
+      description: "Placement convergence flag"
+
+    - name: owner_conflicts
+      unit: "count"
+      color: "gray"
+      description: "Number of multi-owner nodes during write-back"
+
+  derived:
+    - name: qor_cost
+      formula: "area + delay"
+      unit: "combined"
+      color: "black"
+      description: "Area-Delay product (lower is better)"
+
+# Plot definitions
+plots:
+  - id: 01_delay_trend
+    type: single
+    metric: torch.delay
+    title: "Delay Optimization Trend"
+    ylabel: "Delay (ps)"
+    with_marker: true
+
+  - id: 02_area_trend
+    type: single
+    metric: torch.area
+    title: "Area Trend During Optimization"
+    ylabel: "Area (μm²)"
+    with_marker: true
+
+  - id: 03_overflow_trend
+    type: single
+    metric: placement.final_overflow
+    title: "Placement Overflow Trend"
+    ylabel: "Overflow Ratio"
+    with_threshold: 0.1
+    threshold_label: "Target overflow"
+
+  - id: 04_hpwl_trend
+    type: single
+    metric: placement.final_HPWL
+    title: "Wirelength Optimization"
+    ylabel: "HPWL (μm)"
+    with_marker: true
+
+  - id: 05_max_density_trend
+    type: single
+    metric: placement.max_density
+    title: "Maximum Bin Density Trend"
+    ylabel: "Max Density (ratio)"
+    with_threshold: 1.0
+    threshold_label: "Physical limit"
+
+  - id: 06_delay_vs_hpwl
+    type: dual_axis
+    left_metric: torch.delay
+    right_metric: placement.final_HPWL
+    title: "Delay vs Wirelength Co-Optimization"
+    left_ylabel: "Delay (ps)"
+    right_ylabel: "HPWL (μm)"
+    left_color: red
+    right_color: green
+    description: "Shows coupling between mapping and placement optimization"
+
+  - id: 07_area_vs_overflow
+    type: dual_axis
+    left_metric: torch.area
+    right_metric: placement.final_overflow
+    title: "Area vs Placement Density"
+    left_ylabel: "Area (μm²)"
+    right_ylabel: "Overflow Ratio"
+    left_color: blue
+    right_color: orange
+    description: "Reveals area-density tradeoff"
+
+  - id: 08_convergence_heatmap
+    type: heatmap
+    rows:
+      - placement.converged
+      - placement.owner_conflicts
+    title: "Placement Health Status"
+    description: "Convergence status and write-back quality indicators"
+
+# Report generation
+report:
+  include_summary: true
+  include_improvements: true
+  include_statistics: true
+  breakpoints:
+    - 0  # First step
+    - 0.5  # Midpoint
+    - 1.0  # Last step
+
+# Output settings
+output:
+  dpi: 150
+  format: png
+  combined_csv: true
+  summary_txt: true
