@@ -301,24 +301,36 @@ def write_lef(lef_path: str, cell_types_used: set, cell_db: dict):
 def write_def(def_path: str, module_name: str,
               inputs: list, outputs: list, instances: list,
               cell_db: dict, utilization: float = 0.70,
-              seed_positions=None) -> dict:
+              seed_positions=None, chip_width: float = 0.0, chip_height: float = 0.0) -> dict:
     """
     生成 DEF 檔（DIEAREA、ROW、COMPONENTS、PINS、NETS）。
     回傳 chip 尺寸資訊 dict。
+
+    如果 chip_width/chip_height > 0，使用提供的尺寸；否則自動計算。
     """
     # ---- 計算 die 尺寸 ----
-    total_area_um2 = sum(
-        (cell_db[ct]['area'] if ct in cell_db else DEFAULT_AREA_UM2)
-        for ct, _, _ in instances
-    )
-    chip_area_um2 = total_area_um2 / utilization
-    chip_side_um  = math.sqrt(chip_area_um2)
+    if chip_width > 0.0 and chip_height > 0.0:
+        # 使用提供的 chip 尺寸（baseline 固定，不需要計算 total_area）
+        chip_W_um = chip_width
+        chip_H_um = chip_height
+    else:
+        # 自動計算（後續迭代）
+        total_area_um2 = sum(
+            (cell_db[ct]['area'] if ct in cell_db else DEFAULT_AREA_UM2)
+            for ct, _, _ in instances
+        )
+        chip_area_um2 = total_area_um2 / utilization
+        chip_side_um  = math.sqrt(chip_area_um2)
 
-    num_rows = max(20, math.ceil(chip_side_um / CELL_HEIGHT_UM))
-    chip_H_um = num_rows * CELL_HEIGHT_UM
+        num_rows = max(20, math.ceil(chip_side_um / CELL_HEIGHT_UM))
+        chip_H_um = num_rows * CELL_HEIGHT_UM
 
-    num_cols = max(20, math.ceil(chip_side_um / SITE_WIDTH_UM))
-    chip_W_um = num_cols * SITE_WIDTH_UM
+        num_cols = max(20, math.ceil(chip_side_um / SITE_WIDTH_UM))
+        chip_W_um = num_cols * SITE_WIDTH_UM
+
+    # ---- 計算 num_rows 和 num_cols（若未計算）----
+    num_rows = max(20, math.ceil(chip_H_um / CELL_HEIGHT_UM))
+    num_cols = max(20, math.ceil(chip_W_um / SITE_WIDTH_UM))
 
     chip_W_dbu = int(chip_W_um * DBU_PER_UM)
     chip_H_dbu = int(chip_H_um * DBU_PER_UM)
@@ -410,7 +422,6 @@ def write_def(def_path: str, module_name: str,
         'chip_H_um': chip_H_um,
         'chip_W_dbu': chip_W_dbu,
         'chip_H_dbu': chip_H_dbu,
-        'total_area_um2': total_area_um2,
         'num_cells': len(instances),
         'num_rows': num_rows,
         'num_cols': num_cols,
@@ -507,6 +518,10 @@ def main():
              '--docker-prefix /home/james/projects:/workspace')
     parser.add_argument('--seed-positions', default=None,
         help='可選的 node_idx,x_um,y_um CSV，用來把 matching instances 寫成 PLACED')
+    parser.add_argument('--chip-width', type=float, default=0.0,
+        help='固定 chip width (μm)，若為 0 則自動計算 (default: 0.0)')
+    parser.add_argument('--chip-height', type=float, default=0.0,
+        help='固定 chip height (μm)，若為 0 則自動計算 (default: 0.0)')
     args = parser.parse_args()
 
     # 建立路徑轉換函式
@@ -591,10 +606,10 @@ def main():
     def_path = os.path.join(args.output_dir, f"{module_name}.def")
     print(f"[4/5] Generating DEF: {def_path}")
     chip_info = write_def(def_path, module_name, inputs, outputs,
-                          instances, cell_db, args.utilization, seed_positions)
+                          instances, cell_db, args.utilization, seed_positions,
+                          args.chip_width, args.chip_height)
     print(f"      Die area: {chip_info['chip_W_um']:.1f} × {chip_info['chip_H_um']:.1f} μm")
     print(f"               ({chip_info['chip_W_dbu']} × {chip_info['chip_H_dbu']} DBU)")
-    print(f"      Total cell area: {chip_info['total_area_um2']:.2f} μm²")
     print(f"      Rows: {chip_info['num_rows']}, Cols: {chip_info['num_cols']}")
     print(f"      Nets: {chip_info['num_nets']}")
     print(f"      Seeded components: {chip_info['seeded_components']}")

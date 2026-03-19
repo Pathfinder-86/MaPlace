@@ -104,7 +104,14 @@ def main():
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--append-csv", default=None)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print detailed placement metrics (controlled by env PLACEMENT_VERBOSE)")
     args = parser.parse_args()
+
+    # Check environment variable for verbose mode
+    verbose_placement = os.environ.get("PLACEMENT_VERBOSE", "false").lower() == "true"
+    if args.verbose:
+        verbose_placement = True
 
     dp = parse_dreamplace_log(args.dreamplace_log)
     top_summary = load_json(args.summary_json)
@@ -150,17 +157,24 @@ def main():
         ]
         append_csv(args.append_csv, result, fieldnames)
 
-    print(f"[PlacementSummary] step={result['step']} movable={result['num_movable']} nets={result['num_nets']}")
-    print(
-        f"[PlacementSummary] seed comp/pin={result['seeded_components']}/{result['seeded_pins']} | "
-        f"HPWL {result['initial_hpwl']:.3E} -> {result['final_hpwl']:.3E}"
-    )
-    print(
-        f"[PlacementSummary] overflow {result['initial_overflow']:.3E} -> {result['final_overflow']:.3E} | "
-        f"max_density={result['final_max_density']:.3E} | iters={result['placement_iterations']}"
-    )
-    if result.get("placement_runtime_sec") is not None:
-        print(f"[PlacementSummary] runtime={result['placement_runtime_sec']:.3f}s converged={result['converged']}")
+    print(f"[PlacementSummary] step={result['step']} movable={result['num_movable']} nets={result['num_nets']} seed={result['seeded_components']}")
+
+    if verbose_placement:
+        # Detailed metrics
+        print(
+            f"  └─ HPWL {result['initial_hpwl']:.3E} → {result['final_hpwl']:.3E} | "
+            f"overflow {result['initial_overflow']:.3E} → {result['final_overflow']:.3E}"
+        )
+        print(
+            f"  └─ max_density={result['final_max_density']:.3E} | iters={result['placement_iterations']} | "
+            f"runtime={result['placement_runtime_sec']:.3f}s | converged={result['converged']}"
+        )
+    else:
+        # Compact output: only key final metrics
+        print(
+            f"  └─ overflow={result['final_overflow']:.3E} max_density={result['final_max_density']:.3E} "
+            f"converged={result['converged']}"
+        )
 
     return 0
 
