@@ -114,12 +114,21 @@ def compute_derived_metrics(combined: Dict) -> Dict:
 def plot_single_metric(steps: List[int], values: List, metric_name: str,
                        unit: str, color: str, output_path: str,
                        threshold: Optional[float] = None,
-                       baseline_value: Optional[float] = None):
-    """Plot single metric with optional threshold line"""
+                       baseline_value: Optional[float] = None,
+                       best_step: Optional[int] = None,
+                       best_value: Optional[float] = None):
+    """Plot single metric with optional threshold line and best solution marker"""
     fig, ax = plt.subplots(figsize=(12, 6))
 
     ax.plot(steps, values, marker='o', linestyle='-', linewidth=2,
             color=color, label=metric_name, markersize=5)
+
+    # Mark best solution with a larger, different-colored point
+    if best_step is not None and best_value is not None and best_step in steps:
+        step_idx = steps.index(best_step)
+        ax.scatter([best_step], [best_value], s=300, marker='*', color='gold',
+                  edgecolors='darkred', linewidth=2, zorder=5,
+                  label=f'Best (Step={best_step})')
 
     if threshold is not None:
         ax.axhline(y=threshold, color='red', linestyle='--',
@@ -127,7 +136,7 @@ def plot_single_metric(steps: List[int], values: List, metric_name: str,
 
     # Baseline line
     if baseline_value is not None:
-        ax.axhline(y=baseline_value, color='gray', linestyle=':', 
+        ax.axhline(y=baseline_value, color='gray', linestyle=':',
                    linewidth=2.0, label=f'ABC Baseline: {baseline_value:.2f}')
 
     ax.set_xlabel('Optimization Step', fontsize=12)
@@ -136,10 +145,7 @@ def plot_single_metric(steps: List[int], values: List, metric_name: str,
     ax.grid(True, alpha=0.3)
     ax.set_title(f'{metric_name} Trend', fontsize=14, fontweight='bold')
 
-    if threshold is None:
-        ax.legend(loc='best', fontsize=10)
-    else:
-        ax.legend(loc='best', fontsize=10)
+    ax.legend(loc='best', fontsize=10)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
@@ -175,46 +181,6 @@ def plot_dual_axis(steps: List[int], left_values: List, right_values: List,
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=10)
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
-    print(f"✅ Saved: {output_path}")
-
-
-def plot_convergence_heatmap(combined: Dict, place_steps: List[int], output_path: str):
-    """Plot placement convergence and owner_conflicts status (placement_steps only)"""
-    if not place_steps:
-        return
-
-    converged_status = []
-    owner_conflicts = []
-
-    for step in place_steps:
-        conv = combined[step].get('derived_converged', None)
-        conflicts = combined[step].get('place_owner_conflicts', 0)
-
-        converged_status.append(1 if conv == 1 else 0)
-        owner_conflicts.append(int(conflicts) if conflicts else 0)
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
-
-    # Convergence heatmap
-    colors_conv = ['🔴 Not Converged' if c == 0 else '🟢 Converged' for c in converged_status]
-    ax1.bar(place_steps, [1]*len(place_steps), color=['red' if c == 0 else 'green' for c in converged_status],
-            alpha=0.7, edgecolor='black')
-    ax1.set_ylabel('Convergence Status', fontsize=11)
-    ax1.set_ylim([0, 1.5])
-    ax1.set_yticks([])
-    ax1.grid(True, alpha=0.3, axis='x')
-    ax1.set_title('Placement Convergence Status', fontsize=12, fontweight='bold')
-
-    # Owner conflicts
-    ax2.bar(place_steps, owner_conflicts, color='orange', alpha=0.7, edgecolor='black')
-    ax2.set_xlabel('Optimization Step', fontsize=12)
-    ax2.set_ylabel('Owner Conflicts', fontsize=11)
-    ax2.grid(True, alpha=0.3, axis='y')
-    ax2.set_title('Match Ownership Conflicts', fontsize=12, fontweight='bold')
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
@@ -344,44 +310,103 @@ def generate_dashboard(torch_csv: str, place_csv: str, output_dir: str,
         torch_steps = [s for s in steps if 'torch_delay' in combined[s]]
         place_steps = [s for s in steps if 'place_final_overflow' in combined[s]]
 
+        # Extract baseline values from step 0 (ABC placement baseline)
+        baseline_delay = combined.get(0, {}).get('torch_delay', None)
+        baseline_area = combined.get(0, {}).get('torch_area', None)
+        baseline_hpwl = combined.get(0, {}).get('place_final_hpwl', None)
+        baseline_overflow = combined.get(0, {}).get('place_final_overflow', None)
+        baseline_density = combined.get(0, {}).get('place_final_max_density', None)
+
+        # Identify best step (minimum QoR cost) for marking on plots
+        best_step = None
+        best_cost = float('inf')
+        for s in torch_steps:
+            data = combined[s]
+            area = data.get('torch_area', 0)
+            delay = data.get('torch_delay', 0)
+            if area > 0 and delay > 0:
+                cost = area + delay
+                if cost < best_cost:
+                    best_cost = cost
+                    best_step = s
+
         print("\n📊 Generating plots...\n")
+
+        # Determine if placement data is available
+        has_placement = bool(place_steps)
+        if has_placement:
+            print("✅ Placement data found - generating all plots (01-08)")
+        else:
+            print("⚠️  No placement data - generating QoR only (01, 02, 08)")
+        print()
+
+        if best_step is not None:
+            best_step_data = combined[best_step]
+            print(f"⭐ Best Solution: Step={best_step}, Cost={best_cost:.2f} "
+                  f"(Area={best_step_data.get('torch_area', 0):.2f} + "
+                  f"Delay={best_step_data.get('torch_delay', 0):.2f})\n")
+
+            # Find next placement step after best_step (for placement metric marking)
+            next_place_step = None
+            if place_steps:
+                for ps in place_steps:
+                    if ps > best_step:
+                        next_place_step = ps
+                        break
+        else:
+            next_place_step = None
 
         # 1. Delay curve (torch_steps only)
         if torch_steps:
             delays = [combined[s].get('torch_delay', 0) for s in torch_steps]
             if all(d > 0 for d in delays):
+                best_delay = combined.get(best_step, {}).get('torch_delay', None) if best_step else None
                 plot_single_metric(torch_steps, delays, 'Delay', 'ps', 'red',
-                                  os.path.join(output_dir, '01_delay_trend.png'))
+                                  os.path.join(output_dir, '01_delay_trend.png'),
+                                  baseline_value=baseline_delay,
+                                  best_step=best_step, best_value=best_delay)
 
         # 2. Area curve (torch_steps only)
         if torch_steps:
             areas = [combined[s].get('torch_area', 0) for s in torch_steps]
             if all(a > 0 for a in areas):
+                best_area = combined.get(best_step, {}).get('torch_area', None) if best_step else None
                 plot_single_metric(torch_steps, areas, 'Area', 'μm²', 'blue',
-                                  os.path.join(output_dir, '02_area_trend.png'))
+                                  os.path.join(output_dir, '02_area_trend.png'),
+                                  baseline_value=baseline_area,
+                                  best_step=best_step, best_value=best_area)
 
         # 3. Overflow curve (placement_steps only)
         if place_steps:
             overflows = [combined[s].get('place_final_overflow', 0) for s in place_steps]
             if any(o > 0 for o in overflows):
+                best_overflow = combined.get(next_place_step, {}).get('place_final_overflow', None) if next_place_step else None
                 plot_single_metric(place_steps, overflows, 'Overflow', '%', 'orange',
                                   os.path.join(output_dir, '03_overflow_trend.png'),
-                                  threshold=0.1)
+                                  threshold=0.1,
+                                  baseline_value=baseline_overflow,
+                                  best_step=next_place_step, best_value=best_overflow)
 
         # 4. HPWL curve (placement_steps only)
         if place_steps:
             hpwls = [combined[s].get('place_final_hpwl', 0) for s in place_steps]
             if any(h > 0 for h in hpwls):
+                best_hpwl = combined.get(next_place_step, {}).get('place_final_hpwl', None) if next_place_step else None
                 plot_single_metric(place_steps, hpwls, 'HPWL', 'μm', 'green',
-                                  os.path.join(output_dir, '04_hpwl_trend.png'))
+                                  os.path.join(output_dir, '04_hpwl_trend.png'),
+                                  baseline_value=baseline_hpwl,
+                                  best_step=next_place_step, best_value=best_hpwl)
 
         # 5. Max density curve (placement_steps only)
         if place_steps:
             densities = [combined[s].get('place_final_max_density', 0) for s in place_steps]
             if any(d > 0 for d in densities):
+                best_density = combined.get(next_place_step, {}).get('place_final_max_density', None) if next_place_step else None
                 plot_single_metric(place_steps, densities, 'Max Density', 'ratio', 'purple',
                                   os.path.join(output_dir, '05_max_density_trend.png'),
-                                  threshold=1.0)
+                                  threshold=1.0,
+                                  baseline_value=baseline_density,
+                                  best_step=next_place_step, best_value=best_density)
 
         # 6. Dual-axis: Delay vs HPWL (aligned steps)
         if torch_steps and place_steps:
@@ -404,9 +429,16 @@ def generate_dashboard(torch_csv: str, place_csv: str, output_dir: str,
                     plot_dual_axis(common_steps, areas, overflows, 'Area', 'Overflow', 'μm²', '%',
                                   'blue', 'orange', os.path.join(output_dir, '07_area_vs_overflow.png'))
 
-        # 8. Convergence heatmap (placement_steps only)
-        if place_steps and any('derived_converged' in combined[s] for s in place_steps):
-            plot_convergence_heatmap(combined, place_steps, os.path.join(output_dir, '08_convergence_heatmap.png'))
+        # 8. Loss curve (torch_steps only) - Hard loss for training validation
+        if torch_steps:
+            losses = [combined[s].get('torch_loss', 0) for s in torch_steps]
+            if any(l > 0 for l in losses):
+                baseline_loss = combined.get(0, {}).get('torch_loss', None)
+                best_loss = combined.get(best_step, {}).get('torch_loss', None) if best_step else None
+                plot_single_metric(torch_steps, losses, 'Loss', 'cost', 'darkred',
+                                  os.path.join(output_dir, '08_loss_trend.png'),
+                                  baseline_value=baseline_loss,
+                                  best_step=best_step, best_value=best_loss)
 
         # Generate summary report (use all steps)
         print("\n📝 Generating summary report...\n")
